@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+.pytest_cache/
+
+# Deployment / process config (machine-specific, keep private)
+ecosystem.config.js
+
+# Benchmark cache (re-downloadable from the public API)
+data/
+
+# Private data: trained model weights, metrics & evaluation outputs.
+# Per DEPLOYMENT.md §5, publish CODE only — never the model artifacts.
+artifacts/
+logs/
+
+# Scratch logs
+_*.log

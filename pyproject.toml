@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p44miner"
+version = "1.0.0"
+description = "Release-robust chunk-level behavioral bot detector for Poker44 subnet 126"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+lgbm = ["lightgbm>=4.0"]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+include = ["p44miner*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,8 @@
+# Extra deps for the Poker44 best-miner on top of the subnet's requirements.txt.
+# The subnet already pins: bittensor, numpy, scikit-learn, pandas, requests.
+scikit-learn>=1.3
+numpy>=1.24
+joblib>=1.3
+requests>=2.31
+# Optional: enables an extra LightGBM ranker in the blend if present. Not required.
+# lightgbm>=4.0
