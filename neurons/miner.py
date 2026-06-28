@@ -122,8 +122,41 @@ class Miner(BaseMinerNeuron):
         synapse.model_manifest = dict(self.model_manifest)
 
         elapsed = time.perf_counter() - start
-        bt.logging.info(f"Scored {len(chunks)} chunks in {elapsed:.3f}s")
+        self._log_request(synapse, chunks, scores, elapsed)
         return synapse
+
+    def _log_request(self, synapse, chunks, scores, elapsed) -> None:
+        """Per-request validator + chunk telemetry.
+
+        One concise INFO line per query: which validator sent it, how many
+        chunks/hands arrived, and the score distribution we returned. Set
+        POKER44_LOG_CHUNKS=1 to additionally dump the full raw chunk payload
+        per chunk at DEBUG (verbose; for inspection only).
+        """
+        hotkey = getattr(getattr(synapse, "dendrite", None), "hotkey", None)
+        try:
+            vuid = self.metagraph.hotkeys.index(hotkey) if hotkey in self.metagraph.hotkeys else -1
+        except Exception:
+            vuid = -1
+        sizes = [len(c) for c in chunks]
+        total_hands = sum(sizes)
+        flagged = sum(1 for s in scores if s >= 0.5)
+        smin = min(scores) if scores else 0.0
+        smax = max(scores) if scores else 0.0
+        smean = (sum(scores) / len(scores)) if scores else 0.0
+        head = sizes[:10]
+        more = "..." if len(sizes) > 10 else ""
+        bt.logging.info(
+            f"[req] validator uid={vuid} hk={str(hotkey)[:10]} | "
+            f"chunks={len(chunks)} total_hands={total_hands} hands/chunk={head}{more} | "
+            f"flagged>=0.5={flagged}/{len(scores)} "
+            f"score[min/mean/max]={smin:.3f}/{smean:.3f}/{smax:.3f} | {elapsed:.3f}s"
+        )
+        if os.getenv("POKER44_LOG_CHUNKS", "0").strip().lower() not in ("0", "", "false", "no"):
+            for i, (chunk, score) in enumerate(zip(chunks, scores)):
+                bt.logging.debug(
+                    f"[req][chunk {i}] hands={len(chunk)} score={score:.4f} payload={chunk}"
+                )
 
     async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
         return self.common_blacklist(synapse)
