@@ -12,9 +12,11 @@ Contract (verified against poker44/validator/forward.py):
 
 # from __future__ import annotations
 
+import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
 
@@ -107,6 +109,29 @@ class Miner(BaseMinerNeuron):
             )
         bt.logging.info(f"Axon created: {self.axon}")
 
+        # Per-request persistent logs (JSONL, one record per validator query).
+        #   POKER44_REQUEST_LOG : path for full request records (default logs/validator_requests.jsonl)
+        #   POKER44_SCORE_LOG   : path for compact score records (default logs/scores.jsonl)
+        #   POKER44_LOG_CHUNKS  : when truthy, embed the full raw chunk payload in the request log
+        # Set any path env to "off"/"0" to disable that file.
+        self._request_log = self._resolve_log_path(
+            "POKER44_REQUEST_LOG", repo_root / "logs" / "validator_requests.jsonl"
+        )
+        self._score_log = self._resolve_log_path(
+            "POKER44_SCORE_LOG", repo_root / "logs" / "scores.jsonl"
+        )
+        self._log_chunks = os.getenv("POKER44_LOG_CHUNKS", "0").strip().lower() not in (
+            "0",
+            "",
+            "false",
+            "no",
+            "off",
+        )
+        bt.logging.info(
+            f"Request logging -> requests={self._request_log} scores={self._score_log} "
+            f"full_chunks={self._log_chunks}"
+        )
+
     async def forward(self, synapse: DetectionSynapse) -> DetectionSynapse:
         start = time.perf_counter()
         chunks = synapse.chunks or []
@@ -128,10 +153,11 @@ class Miner(BaseMinerNeuron):
     def _log_request(self, synapse, chunks, scores, elapsed) -> None:
         """Per-request validator + chunk telemetry.
 
-        One concise INFO line per query: which validator sent it, how many
-        chunks/hands arrived, and the score distribution we returned. Set
-        POKER44_LOG_CHUNKS=1 to additionally dump the full raw chunk payload
-        per chunk at DEBUG (verbose; for inspection only).
+        Emits one concise INFO line per query, and appends structured JSONL
+        records to two files (configurable via env vars):
+          * request log  -> validator id + full chunk payload (when
+            POKER44_LOG_CHUNKS is set) + returned scores;
+          * score log    -> compact per-request scores for easy tracking.
         """
         hotkey = getattr(getattr(synapse, "dendrite", None), "hotkey", None)
         try:
@@ -140,6 +166,7 @@ class Miner(BaseMinerNeuron):
             vuid = -1
         sizes = [len(c) for c in chunks]
         total_hands = sum(sizes)
+        predictions = [bool(s >= 0.5) for s in scores]
         flagged = sum(1 for s in scores if s >= 0.5)
         smin = min(scores) if scores else 0.0
         smax = max(scores) if scores else 0.0
@@ -152,11 +179,71 @@ class Miner(BaseMinerNeuron):
             f"flagged>=0.5={flagged}/{len(scores)} "
             f"score[min/mean/max]={smin:.3f}/{smean:.3f}/{smax:.3f} | {elapsed:.3f}s"
         )
-        if os.getenv("POKER44_LOG_CHUNKS", "0").strip().lower() not in ("0", "", "false", "no"):
+
+        ts = datetime.now(timezone.utc).isoformat()
+        if self._score_log is not None:
+            self._append_jsonl(
+                self._score_log,
+                {
+                    "ts": ts,
+                    "validator_uid": vuid,
+                    "validator_hotkey": str(hotkey),
+                    "num_chunks": len(chunks),
+                    "hands_per_chunk": sizes,
+                    "scores": scores,
+                    "predictions": predictions,
+                    "flagged": flagged,
+                    "elapsed_s": round(elapsed, 4),
+                },
+            )
+        if self._request_log is not None:
+            record = {
+                "ts": ts,
+                "validator_uid": vuid,
+                "validator_hotkey": str(hotkey),
+                "num_chunks": len(chunks),
+                "hands_per_chunk": sizes,
+                "total_hands": total_hands,
+                "scores": scores,
+                "predictions": predictions,
+                "elapsed_s": round(elapsed, 4),
+            }
+            if self._log_chunks:
+                record["chunks"] = chunks
+            self._append_jsonl(self._request_log, record)
+
+        if self._log_chunks:
             for i, (chunk, score) in enumerate(zip(chunks, scores)):
                 bt.logging.debug(
                     f"[req][chunk {i}] hands={len(chunk)} score={score:.4f} payload={chunk}"
                 )
+
+    @staticmethod
+    def _resolve_log_path(env_var: str, default: Path):
+        """Resolve a JSONL log path from env (or default); None disables it."""
+        raw = os.getenv(env_var)
+        if raw is not None:
+            raw = raw.strip()
+            if raw.lower() in ("off", "0", "false", "no", ""):
+                return None
+            path = Path(raw).expanduser()
+        else:
+            path = Path(default)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # pragma: no cover - defensive
+            bt.logging.warning(f"Could not create log dir for {path}: {exc}")
+            return None
+        return path
+
+    @staticmethod
+    def _append_jsonl(path: Path, record: dict) -> None:
+        """Append one JSON record as a line; never raise into the hot path."""
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+        except Exception as exc:  # pragma: no cover - defensive
+            bt.logging.warning(f"request-log write failed ({path}): {exc}")
 
     async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
         return self.common_blacklist(synapse)
